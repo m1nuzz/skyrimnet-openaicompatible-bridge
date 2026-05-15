@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "e2e-test",
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_e2e.ps1"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -6,7 +6,8 @@
 - The mod (SkyrimSE.exe) communicates with this bridge on port 4000.
 
 ## Workflow Hooks
-- **post-apply**: powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_e2e.ps1
+- Hooks are configured in `.gemini/settings.json` using the `AfterTool` event.
+- Automated E2E testing runs after any `write_file` or `replace` action.
 
 ## Testing
 - E2E tests require SkyrimSE.exe to be running with SkyrimNet mod active on port 8080.

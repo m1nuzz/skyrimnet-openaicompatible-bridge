@@ -1,26 +1,37 @@
 # E2E Test Runner for Gemini CLI Hook
+# Golden Rule: Only JSON to stdout. Debug info to stderr.
 
-# 1. Start the bridge in the background
+function Log-Debug ($msg) {
+    [Console]::Error.WriteLine($msg)
+}
+
+# 1. Start the bridge
+Log-Debug "Starting bridge..."
 $bridgeProcess = Start-Process python -ArgumentList "server.py" -PassThru -WindowStyle Hidden
-Write-Host "Bridge started (PID: $($bridgeProcess.Id))..."
+Log-Debug "Bridge started (PID: $($bridgeProcess.Id))..."
 
-# 2. Wait for it to initialize
 Start-Sleep -Seconds 3
 
-# 3. Run the Playwright test
-Write-Host "Running Playwright E2E test..."
-$testResult = & ".\.venv_e2e\Scripts\python.exe" "click_test.py"
-Write-Host $testResult
+# 2. Run Playwright
+Log-Debug "Running Playwright E2E test..."
+$testResult = & ".\.venv_e2e\Scripts\python.exe" "click_test.py" 2>&1
+Log-Debug $testResult
 
-# 4. Cleanup: Kill the bridge
+# 3. Cleanup
 Stop-Process -Id $bridgeProcess.Id -Force
-Write-Host "Bridge stopped."
+Log-Debug "Bridge stopped."
 
-# 5. Report success/failure to Gemini CLI
+# 4. Output JSON for Gemini CLI
 if ($testResult -like "*E2E TEST PASSED*") {
-    Write-Host "Hook: E2E Test Successful!"
-    exit 0
+    $out = @{
+        allow = $true
+        message = "E2E Test Passed"
+    }
 } else {
-    Write-Host "Hook: E2E Test Failed!"
-    exit 1
+    $out = @{
+        allow = $true # We allow the tool even if test fails, so we can see the result
+        message = "E2E Test Failed"
+    }
 }
+
+$out | ConvertTo-Json -Compress

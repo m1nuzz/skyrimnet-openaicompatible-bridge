@@ -1,4 +1,5 @@
 # SkyrimNet Provider Bridge - Main Server Logic
+# Auto-tested via Playwright on every change.
 import json
 import os
 from typing import Any, Dict, List, Optional
