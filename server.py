@@ -14,6 +14,7 @@ HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "4000"))
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+API_KEY = os.getenv("API_KEY", "")
 DEFAULT_MODEL_ALIAS = os.getenv("DEFAULT_MODEL_ALIAS", "mistral-large")
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP", "{}") or "{}")
 
@@ -75,8 +76,9 @@ async def chat_completions(req: ChatCompletionRequest):
 
 
 async def _mistral_chat(req: ChatCompletionRequest, model_id: str):
-    if not MISTRAL_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing MISTRAL_API_KEY")
+    key = MISTRAL_API_KEY or API_KEY
+    if not key:
+        raise HTTPException(status_code=500, detail="Missing API Key (MISTRAL_API_KEY or generic API_KEY)")
 
     payload: Dict[str, Any] = {
         "model": model_id,
@@ -86,7 +88,7 @@ async def _mistral_chat(req: ChatCompletionRequest, model_id: str):
     if req.max_tokens is not None:
         payload["max_tokens"] = req.max_tokens
 
-    headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
     if req.stream:
 
@@ -114,8 +116,9 @@ async def _mistral_chat(req: ChatCompletionRequest, model_id: str):
 
 
 async def _gemini_chat(req: ChatCompletionRequest, model_id: str):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
+    key = GEMINI_API_KEY or API_KEY
+    if not key:
+        raise HTTPException(status_code=500, detail="Missing API Key (GEMINI_API_KEY or generic API_KEY)")
 
     prompt_text = _join_messages(req.messages)
     body = {
@@ -127,7 +130,7 @@ async def _gemini_chat(req: ChatCompletionRequest, model_id: str):
     if req.max_tokens is not None:
         body["generationConfig"]["maxOutputTokens"] = req.max_tokens
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={key}"
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(url, json=body)
     if r.status_code >= 400:
