@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Tests - SkyrimNet HTTP Server</title>
+
+    <!-- Bundled CSS -->
+    
+    <link rel="stylesheet" href="/static/main.953c8808.css">
+    
+
+    <!-- Theme color for initial load (prevents white flash) -->
+    <style>
+        html {
+            background-color: #000000;
+        }
+
+        body {
+            background-color: #000000;
+            color: #22c55e;
+        }
+
+        body.theme-light {
+            background-color: #f8fafc;
+            color: #1e293b;
+        }
+
+        body.theme-light html {
+            background-color: #f8fafc;
+        }
+    </style>
+
+    <!-- Server-side data injection -->
+    <script>
+        // Inject server-side data into global scope for React
+        window.SKYRIMNET_DATA = {
+
+        };
+    </script>
+
+    <!-- Page-specific head content -->
+    
+</head>
+
+<body class="bg-gray-900 text-green-400 antialiased transition-colors duration-300">
+    <!-- Theme script (now body exists) -->
+    <script>
+        (function () {
+            function getCookie(name) {
+                const value = '; ' + document.cookie;
+                const parts = value.split('; ' + name + '=');
+                if (parts.length === 2) return parts.pop().split(';').shift();
+                return null;
+            }
+            const savedTheme = getCookie('theme') || 'dark';
+            document.body.classList.add('theme-' + savedTheme);
+        })();
+    </script>
+
+    <!-- React Root -->
+    <div id="react-root"></div>
+
+    <!-- Loading message for users with JavaScript disabled -->
+    <noscript>
+        <div style="text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+            <h1>🚀 SkyrimNet</h1>
+            <p>This application requires JavaScript to run.</p>
+            <p>Please enable JavaScript in your browser settings.</p>
+        </div>
+    </noscript>
+
+    <!-- Bundled JavaScript (load order from webpack entrypoints) -->
+    
+    <script src="/static/runtime.50e2d24b.js"></script>
+    
+    <script src="/static/react-vendor.600406c7.js"></script>
+    
+    <script src="/static/codemirror-vendor.8aed64e6.js"></script>
+    
+    <script src="/static/charts-vendor.86bc7f94.js"></script>
+    
+    <script src="/static/vendors.a331dc16.js"></script>
+    
+    <script src="/static/main.f76ba6db.js"></script>
+    
+
+    <!-- Page-specific scripts -->
+    
+</body>
+
+</html>
