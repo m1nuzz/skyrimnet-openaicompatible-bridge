@@ -1,0 +1,11 @@
+{
+  "llm": {
+    "base_url": "http://127.0.0.1:4000/v1",
+    "api_key": "bridge-local-token",
+    "provider": "custom-openai-compatible"
+  },
+  "models": {
+    "default": "mistral-large",
+    "AgentDefault": "gemini-1.5-pro"
+  }
+}
