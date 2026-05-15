@@ -2,10 +2,8 @@
 title SkyrimNet Provider Bridge
 
 echo [0/3] Checking for existing instances on port 4000...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :4000 ^| findstr LISTENING') do (
-    echo Found existing instance (PID %%a). Terminating...
-    taskkill /F /PID %%a >nul 2>&1
-)
+:: Use powershell for a more reliable port check and kill
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 4000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 
 echo [1/3] Checking for virtual environment...
 
