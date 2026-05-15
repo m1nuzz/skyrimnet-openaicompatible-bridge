@@ -21,4 +21,4 @@ echo [3/3] Starting Bridge server...
 echo.
 uv run python server.py
 
-pause
+if not defined NO_PAUSE pause

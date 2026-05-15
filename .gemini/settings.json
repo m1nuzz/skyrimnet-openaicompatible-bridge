@@ -5,6 +5,11 @@
         "matcher": "write_file|replace",
         "hooks": [
           {
+            "name": "verify-bat-launcher",
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File verify_bat.ps1"
+          },
+          {
             "name": "e2e-test",
             "type": "command",
             "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File run_e2e.ps1"
