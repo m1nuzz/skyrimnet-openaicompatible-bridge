@@ -12,13 +12,31 @@ load_dotenv()
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "4000"))
+
+# API Keys
+API_KEY = os.getenv("API_KEY", "")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-API_KEY = os.getenv("API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Base URLs
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+TOGETHER_BASE_URL = os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+MISTRAL_BASE_URL = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
+CUSTOM_BASE_URL = os.getenv("CUSTOM_BASE_URL", "")
+
 DEFAULT_MODEL_ALIAS = os.getenv("DEFAULT_MODEL_ALIAS", "mistral-large")
 MODEL_MAP = json.loads(os.getenv("MODEL_MAP", "{}") or "{}")
 
-app = FastAPI(title="SkyrimNet Provider Bridge", version="0.1.0")
+app = FastAPI(title="SkyrimNet Provider Bridge", version="0.2.0")
 
 
 class ChatMessage(BaseModel):
@@ -68,20 +86,32 @@ async def chat_completions(req: ChatCompletionRequest):
     provider, model_id = target.split(":", 1)
 
     if provider == "mistral":
-        return await _mistral_chat(req, model_id)
+        return await _openai_compatible_chat(req, model_id, MISTRAL_BASE_URL, MISTRAL_API_KEY or API_KEY)
+    if provider == "openai":
+        return await _openai_compatible_chat(req, model_id, OPENAI_BASE_URL, OPENAI_API_KEY or API_KEY)
+    if provider == "groq":
+        return await _openai_compatible_chat(req, model_id, GROQ_BASE_URL, GROQ_API_KEY or API_KEY)
+    if provider == "openrouter":
+        return await _openai_compatible_chat(req, model_id, OPENROUTER_BASE_URL, OPENROUTER_API_KEY or API_KEY)
+    if provider == "together":
+        return await _openai_compatible_chat(req, model_id, TOGETHER_BASE_URL, TOGETHER_API_KEY or API_KEY)
+    if provider == "deepseek":
+        return await _openai_compatible_chat(req, model_id, DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY or API_KEY)
     if provider == "gemini":
         return await _gemini_chat(req, model_id)
-    if provider == "openai" or provider == "mylocal":
-        return await _openai_chat(req, model_id)
+    if provider == "anthropic":
+        return await _anthropic_chat(req, model_id)
+    if provider in ["custom", "openai-compatible", "mylocal"]:
+        return await _openai_compatible_chat(req, model_id, CUSTOM_BASE_URL, API_KEY)
 
     raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
 
 
-async def _openai_chat(req: ChatCompletionRequest, model_id: str):
-    if not CUSTOM_BASE_URL:
-        raise HTTPException(status_code=500, detail="Missing CUSTOM_BASE_URL for openai provider")
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="Missing API_KEY for openai provider")
+async def _openai_compatible_chat(req: ChatCompletionRequest, model_id: str, base_url: str, key: str):
+    if not base_url:
+        raise HTTPException(status_code=500, detail="Missing Base URL for provider")
+    if not key:
+        raise HTTPException(status_code=500, detail="Missing API Key for provider")
 
     payload: Dict[str, Any] = {
         "model": model_id,
@@ -91,8 +121,8 @@ async def _openai_chat(req: ChatCompletionRequest, model_id: str):
     if req.max_tokens is not None:
         payload["max_tokens"] = req.max_tokens
 
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    url = f"{CUSTOM_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    url = f"{base_url.rstrip('/')}/chat/completions"
 
     if req.stream:
 
@@ -117,50 +147,10 @@ async def _openai_chat(req: ChatCompletionRequest, model_id: str):
     return JSONResponse(content=r.json())
 
 
-async def _mistral_chat(req: ChatCompletionRequest, model_id: str):
-    key = MISTRAL_API_KEY or API_KEY
-    if not key:
-        raise HTTPException(status_code=500, detail="Missing API Key (MISTRAL_API_KEY or generic API_KEY)")
-
-    payload: Dict[str, Any] = {
-        "model": model_id,
-        "messages": [m.model_dump() for m in req.messages],
-        "temperature": req.temperature if req.temperature is not None else 0.7,
-    }
-    if req.max_tokens is not None:
-        payload["max_tokens"] = req.max_tokens
-
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-    if req.stream:
-
-        async def event_gen():
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream(
-                    "POST", "https://api.mistral.ai/v1/chat/completions", headers=headers, json={**payload, "stream": True}
-                ) as resp:
-                    if resp.status_code >= 400:
-                        text = await resp.aread()
-                        yield f"data: {json.dumps({'error': text.decode('utf-8', errors='ignore')})}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
-                    async for line in resp.aiter_lines():
-                        if line:
-                            yield f"{line}\n"
-
-        return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload)
-    if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=r.text)
-    return JSONResponse(content=r.json())
-
-
 async def _gemini_chat(req: ChatCompletionRequest, model_id: str):
     key = GEMINI_API_KEY or API_KEY
     if not key:
-        raise HTTPException(status_code=500, detail="Missing API Key (GEMINI_API_KEY or generic API_KEY)")
+        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY or generic API_KEY")
 
     prompt_text = _join_messages(req.messages)
     body = {
@@ -197,6 +187,42 @@ async def _gemini_chat(req: ChatCompletionRequest, model_id: str):
                 "finish_reason": "stop",
             }
         ],
+    }
+
+
+async def _anthropic_chat(req: ChatCompletionRequest, model_id: str):
+    key = ANTHROPIC_API_KEY or API_KEY
+    if not key:
+        raise HTTPException(status_code=500, detail="Missing ANTHROPIC_API_KEY or generic API_KEY")
+
+    payload: Dict[str, Any] = {
+        "model": model_id,
+        "messages": [m.model_dump() for m in req.messages],
+        "max_tokens": req.max_tokens or 1024,
+        "temperature": req.temperature if req.temperature is not None else 0.7,
+    }
+
+    headers = {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    url = "https://api.anthropic.com/v1/messages"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(url, headers=headers, json=payload)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+
+    data = r.json()
+    # Simple transform to OpenAI format
+    content = data["content"][0]["text"] if data.get("content") else ""
+    return {
+        "id": data.get("id", "anthropic-bridge"),
+        "object": "chat.completion",
+        "created": 0,
+        "model": req.model or DEFAULT_MODEL_ALIAS,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
     }
 
 
