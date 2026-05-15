@@ -12,6 +12,10 @@
 - **Catch-all Model Mapping**: If a requested model alias is not in `MODEL_MAP`, the bridge defaults to `gemini:gemini-1.5-flash` instead of returning a 400 error.
 - **Endpoint Aliasing**: The bridge handles both `POST /v1/chat/completions` and `POST /v1` to accommodate SkyrimNet's request format.
 
+## How to Run
+- **Windows**: Just double-click `run_bridge.bat`. It will automatically handle `uv venv`, install dependencies, and start the server.
+- **Manual**: `uv run python server.py`.
+
 ## Automated E2E Testing
 - **Tool**: Playwright (Python).
 - **Venv**: Use `.venv_e2e` for running tests (`.\.venv_e2e\Scripts\python.exe click_test.py`).
