@@ -71,8 +71,50 @@ async def chat_completions(req: ChatCompletionRequest):
         return await _mistral_chat(req, model_id)
     if provider == "gemini":
         return await _gemini_chat(req, model_id)
+    if provider == "openai" or provider == "mylocal":
+        return await _openai_chat(req, model_id)
 
     raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+
+
+async def _openai_chat(req: ChatCompletionRequest, model_id: str):
+    if not CUSTOM_BASE_URL:
+        raise HTTPException(status_code=500, detail="Missing CUSTOM_BASE_URL for openai provider")
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Missing API_KEY for openai provider")
+
+    payload: Dict[str, Any] = {
+        "model": model_id,
+        "messages": [m.model_dump() for m in req.messages],
+        "temperature": req.temperature if req.temperature is not None else 0.7,
+    }
+    if req.max_tokens is not None:
+        payload["max_tokens"] = req.max_tokens
+
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    url = f"{CUSTOM_BASE_URL.rstrip('/')}/chat/completions"
+
+    if req.stream:
+
+        async def event_gen():
+            async with httpx.AsyncClient(timeout=120) as client:
+                async with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as resp:
+                    if resp.status_code >= 400:
+                        text = await resp.aread()
+                        yield f"data: {json.dumps({'error': text.decode('utf-8', errors='ignore')})}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    async for line in resp.aiter_lines():
+                        if line:
+                            yield f"{line}\n"
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(url, headers=headers, json=payload)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return JSONResponse(content=r.json())
 
 
 async def _mistral_chat(req: ChatCompletionRequest, model_id: str):
