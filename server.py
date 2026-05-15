@@ -1,5 +1,6 @@
 # SkyrimNet Provider Bridge - Main Server Logic
 # Auto-tested via Playwright on every change.
+# HOOK_TEST_VERIFY
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -61,8 +62,7 @@ def _resolve_model(alias: Optional[str]) -> str:
     key = alias or DEFAULT_MODEL_ALIAS
     target = MODEL_MAP.get(key)
     if not target:
-        print(f"Unknown model alias '{key}', falling back to gemini:gemini-1.5-flash")
-        return "gemini:gemini-1.5-flash"
+        raise HTTPException(status_code=400, detail=f"Model alias '{key}' not found in MODEL_MAP. Please update .env.")
     return target
 
 
@@ -95,16 +95,15 @@ async def models() -> Dict[str, Any]:
 @app.post("/v1/chat/completions")
 @app.post("/v1")
 async def chat_completions(request: Request):
+    # This unified function now handles all incoming POSTs
+    return await process_chat_request(request)
+
+async def process_chat_request(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raw_body = await request.body()
-        print(f"DEBUG RAW BODY: {raw_body.decode('utf-8', errors='ignore')}")
         raise HTTPException(status_code=400, detail="Invalid JSON")
-        
-    print(f"DEBUG RECEIVED BODY: {json.dumps(body)}")
     
-    # Extract data with extreme care
     model_alias = body.get("model")
     raw_messages = body.get("messages", [])
     
@@ -112,12 +111,9 @@ async def chat_completions(request: Request):
     for m in raw_messages:
         role = m.get("role", "user")
         content = m.get("content", "")
-        
-        # Multimodal to string fallback
         if isinstance(content, list):
             text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
             content = " ".join(text_parts)
-            
         messages.append(ChatMessage(role=role, content=content))
         
     req = ChatCompletionRequest(
