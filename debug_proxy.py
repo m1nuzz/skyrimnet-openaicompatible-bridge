@@ -102,20 +102,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except:
                 pass
 
-            # 5. NOW Log everything to console (after the mod got its response)
+            # 5. Log everything to console (after the mod got its response)
             duration = time.time() - start_time
             with LOCK:
-                print(f"\n{'='*40} REQUEST {'='*40}")
+                print(f"\n{'='*30} REQUEST START {'='*30}")
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_data)} bytes)")
                 
+                print("HEADERS:")
+                for h, v in self.headers.items():
+                    print(f"  {h}: {v}")
+
                 if body_is_json:
-                    print(f"RAW BODY:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
+                    print(f"\nRAW JSON BODY:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
                 else:
-                    print("RAW BODY: (Binary or Malformed)")
+                    print(f"\nRAW BODY (Not JSON):\n{data_to_clean.decode('utf-8', errors='replace')}")
                 
-                print(f"-"*20)
-                print(f"[{get_ts()}] API STATUS: {resp.status_code} | LATENCY: {duration:.2f}s")
-                print(f"{'='*89}\n")
+                print(f"\n{'-'*20} API RESPONSE {'-'*20}")
+                print(f"[{get_ts()}] STATUS: {resp.status_code} | LATENCY: {duration:.2f}s")
+                print(f"RESPONSE BODY:\n{response_text}")
+                print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
             with LOCK:
