@@ -1,5 +1,6 @@
 # SkyrimNet Debug Proxy - Logs all requests to see exactly what SkyrimNet sends
 import json
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import zlib
@@ -8,10 +9,16 @@ from datetime import datetime
 import subprocess
 import time
 import requests
+from dotenv import load_dotenv
+
+# Load keys from .env
+load_dotenv()
 
 # Configuration
 PORT = 4000
 FORWARD_TO = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Use GEMINI_API_KEY or generic API_KEY from .env
+API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
 # In-memory log of requests
 REQUEST_LOG = []
@@ -47,10 +54,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         print(json.dumps(request_body, indent=2, ensure_ascii=False))
 
         # FIX: Strip fields that Google Gemini doesn't support
+        forward_data = raw_data
         if isinstance(request_body, dict):
             cleaned_body = request_body.copy()
             removed = []
-            for field in ["provider", "reasoning"]:
+            # Extended list of fields unsupported by Google's OpenAI-compatible shim
+            unsupported_fields = [
+                "provider", "reasoning", 
+                "frequency_penalty", "presence_penalty", 
+                "logit_bias", "logprobs", "top_logprobs"
+            ]
+            for field in unsupported_fields:
                 if field in cleaned_body:
                     del cleaned_body[field]
                     removed.append(field)
@@ -59,16 +73,31 @@ class ProxyHandler(BaseHTTPRequestHandler):
             
             # Forward the CLEANED body
             forward_data = json.dumps(cleaned_body).encode('utf-8')
-        else:
-            forward_data = raw_data
 
         # Forward logic
         try:
-            headers = {k: v for k, v in self.headers.items() if k.lower() not in ['content-length', 'content-encoding', 'host']}
+            # Prepare headers for forwarding
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in ['content-length', 'content-encoding', 'host', 'authorization']}
             headers['Content-Type'] = 'application/json'
+            
+            # Use our LOCAL API KEY if available
+            key_to_use = API_KEY_LOCAL
+            if key_to_use:
+                print(f"INFO: Using API Key from .env ({key_to_use[:8]}...)")
+                headers['Authorization'] = f"Bearer {key_to_use}"
+            else:
+                # Fallback to whatever client sent if .env is empty
+                auth = self.headers.get('Authorization')
+                if auth:
+                    headers['Authorization'] = auth
+                    print("INFO: Forwarding client's Authorization header.")
 
             if FORWARD_TO:
+                # Google OpenAI endpoint can take key in URL or Header
                 url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
+                if key_to_use:
+                    url += f"?key={key_to_use}"
+                
                 resp = requests.post(url, headers=headers, data=forward_data, timeout=30)
 
                 print(f"\n=== RESPONSE FROM API ({resp.status_code}) ===")
@@ -107,6 +136,8 @@ if __name__ == "__main__":
     kill_port(PORT)
     print(f"Starting debug proxy on port {PORT}")
     print(f"Forwarding to: {FORWARD_TO}")
+    if not API_KEY_LOCAL:
+        print("WARNING: No API_KEY found in .env! Proxy will use client's key.")
     
     server = HTTPServer(("127.0.0.1", PORT), ProxyHandler)
     try:
