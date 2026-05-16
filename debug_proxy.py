@@ -101,18 +101,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 resp = requests.post(url, headers=headers, data=forward_data, timeout=30)
 
                 print(f"\n=== RESPONSE FROM API ({resp.status_code}) ===")
-                print(resp.text)
+                # Clean up response: Remove <thought> blocks which confuse some parsers
+                response_text = resp.text
+                if "<thought>" in response_text and "</thought>" in response_text:
+                    import re
+                    response_text = re.sub(r'<thought>.*?</thought>', '', response_text, flags=re.DOTALL).strip()
+                    print("INFO: Stripped <thought> block from response.")
+                
+                # Convert back to bytes
+                response_bytes = response_text.encode('utf-8')
+
+                print(response_text)
 
                 # Send back to client
-                self.send_response(resp.status_code)
-                for h, v in resp.headers.items():
-                    if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
-                        self.send_header(h, v)
-                self.end_headers()
-                self.wfile.write(resp.content)
+                try:
+                    self.send_response(resp.status_code)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(response_bytes)))
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(response_bytes)
+                except (ConnectionAbortedError, ConnectionResetError):
+                    print("INFO: Client closed connection before response was sent.")
         except Exception as e:
-            print(f"Forward error: {e}")
-            self.send_error(500, str(e))
+            if not isinstance(e, (ConnectionAbortedError, ConnectionResetError)):
+                print(f"Forward error: {e}")
+                try:
+                    self.send_error(500, str(e))
+                except:
+                    pass
 
     def log_message(self, format, *args):
         return
