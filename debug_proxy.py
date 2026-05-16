@@ -56,6 +56,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except:
                 request_body = {"raw": "Binary/Malformed"}
 
+            # Log the request content in a readable way
+            print(f"--- [{req_id}] PROMPT DETAILS ---")
+            if isinstance(request_body, dict):
+                print(f"Model: {request_body.get('model')}")
+                messages = request_body.get('messages', [])
+                for msg in messages:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    if isinstance(content, list):
+                        # Handle multimodal (filter out the big base64 images)
+                        text_parts = [p.get('text', '') for p in content if p.get('type') == 'text']
+                        has_img = any(p.get('type') == 'image_url' for p in content)
+                        print(f"  {role}: {' '.join(text_parts)} {'[IMAGE REDACTED]' if has_img else ''}")
+                    else:
+                        # Print full text (System prompt, user chat, etc.)
+                        print(f"  {role}: {content}")
+            print(f"--- [{req_id}] END PROMPT ---")
+
             # 3. Strip incompatible fields
             forward_data = raw_data
             if isinstance(request_body, dict):
