@@ -47,6 +47,20 @@ def fix_mojibake(obj):
         return {k: fix_mojibake(v) for k, v in obj.items()}
     return obj
 
+def remangle_mojibake(obj):
+    """Recursively convert clean UTF-8 back to broken Latin-1 format for SkyrimNet."""
+    if isinstance(obj, str):
+        try:
+            # Clean string -> encode to UTF-8 bytes -> decode as Latin-1 to get characters like Ð
+            return obj.encode('utf-8').decode('latin-1')
+        except:
+            return obj
+    elif isinstance(obj, list):
+        return [remangle_mojibake(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: remangle_mojibake(v) for k, v in obj.items()}
+    return obj
+
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/v1" or self.path == "/v1/chat/completions":
@@ -102,13 +116,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # Perform network call
             resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120)
             
-            # 3. Clean Response
+            # 5. Clean Response
             response_text = resp.text
             if "<thought>" in response_text:
                 response_text = re.sub(r'<thought>.*?</thought>', '', response_text, flags=re.DOTALL).strip()
-            response_bytes = response_text.encode('utf-8')
 
-            # 4. Send back to mod as fast as possible
+            # Re-mangle to broken format for SkyrimNet compatibility
+            try:
+                resp_json = json.loads(response_text)
+                # Convert clean Russian -> broken Latin-1 representation
+                mangled_json = remangle_mojibake(resp_json)
+                # We use default json.dumps (ensure_ascii=True) to produce standard JSON string
+                # then encode it to bytes.
+                final_response_text = json.dumps(mangled_json)
+            except:
+                # Fallback if not JSON
+                final_response_text = response_text
+
+            response_bytes = final_response_text.encode('utf-8')
+
+            # 6. Send Back & Final Log
+
             try:
                 self.send_response(resp.status_code)
                 self.send_header('Content-Type', 'application/json')
