@@ -2,8 +2,8 @@
 title SkyrimNet Provider Bridge
 
 echo [0/3] Checking for existing instances on port 4000...
-:: Use powershell for a more reliable port check and kill
-powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 4000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+:: Robust cleanup for all connections on port 4000
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 4000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }"
 
 echo [1/3] Checking for virtual environment...
 

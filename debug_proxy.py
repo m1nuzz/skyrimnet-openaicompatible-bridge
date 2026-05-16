@@ -118,7 +118,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def kill_port(port):
     print(f"Cleaning port {port}...")
-    cmd = f"powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}\""
+    # Robust cleanup for all connections on the specific port
+    cmd = f"powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}\""
     subprocess.run(cmd, shell=True)
     time.sleep(1)
 
