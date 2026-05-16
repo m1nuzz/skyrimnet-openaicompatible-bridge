@@ -30,6 +30,23 @@ LOCK = threading.Lock()
 def get_ts():
     return datetime.now().strftime("%H:%M:%S.%f")
 
+def fix_mojibake(obj):
+    """Recursively fix double-encoded UTF-8 strings (UTF-8 as Latin-1)."""
+    if isinstance(obj, str):
+        try:
+            # Check if it looks like Russian mojibake (Ð or Ñ characters)
+            if 'Ð' in obj or 'Ñ' in obj:
+                # Try to re-encode as latin-1 and then decode as utf-8
+                return obj.encode('latin-1').decode('utf-8')
+        except:
+            pass
+        return obj
+    elif isinstance(obj, list):
+        return [fix_mojibake(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: fix_mojibake(v) for k, v in obj.items()}
+    return obj
+
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/v1" or self.path == "/v1/chat/completions":
@@ -58,6 +75,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             
             try:
                 body = json.loads(data_to_clean.decode('utf-8'))
+                # Apply mojibake fix for Russian text
+                body = fix_mojibake(body)
                 body_is_json = True
             except:
                 body = {}
