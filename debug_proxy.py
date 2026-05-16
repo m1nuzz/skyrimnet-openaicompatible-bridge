@@ -109,11 +109,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_data)} bytes)")
                 
                 if body_is_json:
-                    raw_json_str = json.dumps(body, indent=2, ensure_ascii=False)
-                    if len(raw_json_str) > 100000:
-                        print(f"RAW BODY (Truncated for console, full data sent to API):\n{raw_json_str[:1000]}...\n[TRUNCATED {len(raw_json_str)-1000} chars]")
-                    else:
-                        print(f"RAW BODY:\n{raw_json_str}")
+                    print(f"RAW BODY:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
                 else:
                     print("RAW BODY: (Binary or Malformed)")
                 
