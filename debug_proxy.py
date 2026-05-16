@@ -58,26 +58,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except:
                 body = {"raw": "Binary or Malformed JSON"}
 
-            # 2. Log Request Details
+            # 2. Log Request Details (FULL RAW JSON)
             if isinstance(body, dict):
-                log_buffer.append(f"Model: {body.get('model')}")
-                log_buffer.append(f"Settings: Temp={body.get('temperature')}, MaxTokens={body.get('max_tokens')}, Stream={body.get('stream')}")
-                
-                messages = body.get('messages', [])
-                log_buffer.append(f"Messages ({len(messages)}):")
-                for m in messages:
-                    role = m.get('role', 'unknown').upper()
-                    content = m.get('content', '')
-                    if isinstance(content, list):
-                        # Multimodal
-                        text_parts = [p.get('text', '') for p in content if p.get('type') == 'text']
-                        has_img = any(p.get('type') == 'image_url' for p in content)
-                        content_str = " ".join(text_parts)
-                        if has_img: content_str += " [IMAGE ATTACHED]"
-                    else:
-                        content_str = content
-                    
-                    log_buffer.append(f"  [{role}]: {content_str}")
+                log_buffer.append("Raw Request Body:")
+                log_buffer.append(json.dumps(body, indent=2, ensure_ascii=False))
             
             # 3. Clean and Forward
             forward_data = raw_data
