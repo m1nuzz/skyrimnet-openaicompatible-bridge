@@ -1,7 +1,7 @@
 # SkyrimNet Debug Proxy - Logs all requests to see exactly what SkyrimNet sends
 import json
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import re
 import urllib.parse
 import zlib
 import base64
@@ -9,6 +9,7 @@ from datetime import datetime
 import subprocess
 import time
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from dotenv import load_dotenv
 
 # Load keys from .env
@@ -17,7 +18,6 @@ load_dotenv()
 # Configuration
 PORT = 4000
 FORWARD_TO = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# Use GEMINI_API_KEY or generic API_KEY from .env
 API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
 # In-memory log of requests
@@ -31,9 +31,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def handle_chat_completions(self):
+        req_id = datetime.now().strftime("%H:%M:%S.%f")
+        print(f"[{req_id}] incoming request...")
+        
         # Read request content
-        content_length = int(self.headers.get('Content-Length', 0))
-        raw_data = self.rfile.read(content_length)
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            raw_data = self.rfile.read(content_length)
+        except Exception as e:
+            print(f"[{req_id}] Error reading body: {e}")
+            return
 
         # Try to decode and decompress if needed
         try:
@@ -50,15 +57,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             request_body = {"raw": base64.b64encode(raw_data).decode('ascii'), "error": str(e)}
 
         # Log and Print Request
-        print(f"\n=== REQUEST INTERCEPTED: {self.path} ===")
-        print(json.dumps(request_body, indent=2, ensure_ascii=False))
+        print(f"=== [{req_id}] REQUEST INTERCEPTED: {self.path} ===")
+        # print(json.dumps(request_body, indent=2, ensure_ascii=False)) # Hidden for token saving as requested
 
         # FIX: Strip fields that Google Gemini doesn't support
         forward_data = raw_data
         if isinstance(request_body, dict):
             cleaned_body = request_body.copy()
             removed = []
-            # Extended list of fields unsupported by Google's OpenAI-compatible shim
             unsupported_fields = [
                 "provider", "reasoning", 
                 "frequency_penalty", "presence_penalty", 
@@ -69,49 +75,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     del cleaned_body[field]
                     removed.append(field)
             if removed:
-                print(f"INFO: Removed incompatible fields for Gemini: {', '.join(removed)}")
+                print(f"[{req_id}] INFO: Stripped: {', '.join(removed)}")
             
-            # Forward the CLEANED body
             forward_data = json.dumps(cleaned_body).encode('utf-8')
 
         # Forward logic
         try:
-            # Prepare headers for forwarding
             headers = {k: v for k, v in self.headers.items() if k.lower() not in ['content-length', 'content-encoding', 'host', 'authorization']}
             headers['Content-Type'] = 'application/json'
             
-            # Use our LOCAL API KEY if available
             key_to_use = API_KEY_LOCAL
             if key_to_use:
-                print(f"INFO: Using API Key from .env ({key_to_use[:8]}...)")
                 headers['Authorization'] = f"Bearer {key_to_use}"
-            else:
-                # Fallback to whatever client sent if .env is empty
-                auth = self.headers.get('Authorization')
-                if auth:
-                    headers['Authorization'] = auth
-                    print("INFO: Forwarding client's Authorization header.")
 
             if FORWARD_TO:
-                # Google OpenAI endpoint can take key in URL or Header
                 url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
                 if key_to_use:
                     url += f"?key={key_to_use}"
                 
-                resp = requests.post(url, headers=headers, data=forward_data, timeout=30)
+                print(f"[{req_id}] Forwarding to Gemini...")
+                resp = requests.post(url, headers=headers, data=forward_data, timeout=60)
+                print(f"[{req_id}] API Response: {resp.status_code}")
 
-                print(f"\n=== RESPONSE FROM API ({resp.status_code}) ===")
-                # Clean up response: Remove <thought> blocks which confuse some parsers
+                # Clean up response: Remove <thought> blocks
                 response_text = resp.text
-                if "<thought>" in response_text and "</thought>" in response_text:
-                    import re
+                if "<thought>" in response_text:
                     response_text = re.sub(r'<thought>.*?</thought>', '', response_text, flags=re.DOTALL).strip()
-                    print("INFO: Stripped <thought> block from response.")
+                    print(f"[{req_id}] INFO: Stripped <thought> block.")
                 
-                # Convert back to bytes
                 response_bytes = response_text.encode('utf-8')
-
-                print(response_text)
 
                 # Send back to client
                 try:
@@ -121,27 +113,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header('Access-Control-Allow-Origin', '*')
                     self.end_headers()
                     self.wfile.write(response_bytes)
-                except (ConnectionAbortedError, ConnectionResetError):
-                    print("INFO: Client closed connection before response was sent.")
+                    print(f"[{req_id}] Done.")
+                except Exception as e:
+                    print(f"[{req_id}] INFO: Client closed connection early: {e}")
         except Exception as e:
-            if not isinstance(e, (ConnectionAbortedError, ConnectionResetError)):
-                print(f"Forward error: {e}")
-                try:
-                    self.send_error(500, str(e))
-                except:
-                    pass
+            print(f"[{req_id}] Forward error: {e}")
+            try:
+                self.send_error(500, str(e))
+            except:
+                pass
 
     def log_message(self, format, *args):
         return
-
-    def do_GET(self):
-        if self.path == "/inspect":
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(REQUEST_LOG, indent=2).encode('utf-8'))
-        else:
-            self.send_error(404)
 
 def kill_port(port):
     print(f"Cleaning port {port}...")
@@ -151,12 +134,11 @@ def kill_port(port):
 
 if __name__ == "__main__":
     kill_port(PORT)
-    print(f"Starting debug proxy on port {PORT}")
+    print(f"Starting Multi-threaded Debug Proxy on port {PORT}")
     print(f"Forwarding to: {FORWARD_TO}")
-    if not API_KEY_LOCAL:
-        print("WARNING: No API_KEY found in .env! Proxy will use client's key.")
     
-    server = HTTPServer(("127.0.0.1", PORT), ProxyHandler)
+    # Using ThreadingHTTPServer to prevent blocking
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), ProxyHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
