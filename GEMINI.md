@@ -2,15 +2,18 @@
 
 ## Architecture & Infrastructure
 - **Purpose**: A bridge between the SkyrimNet mod and various AI providers (Gemini, Mistral, OpenAI, Anthropic, etc.).
+- **Implementation**: Uses a robust `ThreadingHTTPServer` to handle complex encoding (Russian mojibake) and Server-Sent Events (SSE).
 - **Ports**:
   - **8080**: Occupied by `SkyrimSE.exe` (SkyrimNet mod internal server/UI).
   - **4000**: Used by this Bridge service.
 - **Workflow**: `Skyrim mod` -> `Bridge (4000)` -> `AI Provider API`.
 
 ## Key Features & Logic
-- **Multimodal Support**: SkyrimNet sends complex requests (lists of content with base64 images). `server.py` has robust manual parsing to extract text for providers that need it.
-- **Catch-all Model Mapping**: If a requested model alias is not in `MODEL_MAP`, the bridge defaults to `gemini:gemini-1.5-flash` instead of returning a 400 error.
-- **Endpoint Aliasing**: The bridge handles both `POST /v1/chat/completions` and `POST /v1` to accommodate SkyrimNet's request format.
+- **Multimodal Support**: SkyrimNet sends complex requests (lists of content with base64 images). `server.py` handles this seamlessly.
+- **Encoding Fix (Russian)**: Automatic two-way conversion between clean UTF-8 (for AI) and "broken" Latin-1 (for SkyrimNet compatibility). Fixes TTS and subtitles.
+- **Stateful Thought Stripping**: Prevents AI `<thought>` or `<thinking>` tags from leaking into the game, even across stream chunks.
+- **Catch-all Model Mapping**: If a requested model alias is not recognized, the bridge defaults to `gemini:gemini-1.5-flash`.
+- **Endpoint Aliasing**: The bridge handles both `POST /v1/chat/completions` and `POST /v1`.
 
 ## How to Run
 - **Windows**: Just double-click `run_bridge.bat`. It will automatically handle `uv venv`, install dependencies, and start the server.
