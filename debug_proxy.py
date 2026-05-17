@@ -16,7 +16,8 @@ load_dotenv()
 
 # Configuration
 PORT = int(os.getenv("PORT", 4000))
-FORWARD_TO = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Default to Google, but allow override via CUSTOM_BASE_URL or BASE_URL
+FORWARD_TO = os.getenv("CUSTOM_BASE_URL") or os.getenv("BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/"
 API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
 # Persistent session
