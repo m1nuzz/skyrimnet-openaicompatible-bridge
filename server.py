@@ -1,5 +1,6 @@
 # SkyrimNet Master Provider Bridge - Resilient Encoding, Streaming & Diagnostic Logging
-# Audited and consolidated from 46+ commits. Enhanced with line-buffered filtering.
+# Audited and consolidated from 46+ commits.
+# Enhanced with structural task detection and Action preservation.
 import json
 import os
 import re
@@ -56,17 +57,22 @@ def process_recursive(obj, func):
     return obj
 
 def is_leakage_line(line, skip=False):
-    """Check if a single line contains technical AI leakage."""
+    """Check if a single line contains technical AI leakage. Preserves ACTION: commands."""
     if not line or skip: return False
+    # CRITICAL: 'Action' removed from patterns to prevent deleting gameplay commands
     leakage_patterns = [
-        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Action|Dialogue|Thought|Thinking|Note|Note to self):\s*.*$',
+        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Dialogue|Thought|Thinking|Note|Note to self):\s*.*$',
         r'^(Ответ|Реакция|Действие|Мысли|План|Заметка):\s*.*$',
-        r'^\d+[\.\)]\s.*$', # Numbered/bullet reasoning
+        r'^\d+[\.\)]\s.*$', # Numbered reasoning
         r'^\d+\.\s*\*\*.*?\*\*.*$', 
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
     l_strip = line.strip()
+    # Explicitly ALLOW lines starting with ACTION: regardless of case
+    if l_strip.upper().startswith("ACTION:"):
+        return False
+        
     for pattern in leakage_patterns:
         if re.search(pattern, l_strip, re.IGNORECASE):
             return True
@@ -117,7 +123,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 request_json = json.loads(decoded_body.decode('utf-8'))
                 stream_requested = request_json.get('stream', False)
                 full_prompt_text = str(request_json.get('messages', []))
-                if any(kw in full_prompt_text.lower() for kw in ["json", "memory", "mood", "query", "impression", "describe", "visible", "screenshot", "camera"]):
+                
+                # STRUCTURAL TASK DETECTION (More robust than keyword matching)
+                if "Output format: `" in full_prompt_text or \
+                   "Respond with ONLY" in full_prompt_text or \
+                   "Generate a memory search query" in full_prompt_text or \
+                   "Determine the next speaker" in full_prompt_text:
                     is_json_task = True
 
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
@@ -139,8 +150,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
             if API_KEY_LOCAL: url += f"?key={API_KEY_LOCAL}"
 
-            # 4. Request to API
-            resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120, stream=stream_requested)
+            # 4. Request to API (LONG TIMEOUT FOR REASONING MODELS)
+            resp = SESSION.post(url, headers=headers, data=forward_data, timeout=3600, stream=stream_requested)
             
             # Prepare Response Headers
             self.send_response(resp.status_code)
@@ -157,7 +168,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             is_thinking = False
 
             if stream_requested:
-                # 5a. STREAMING HANDLER with Line Buffering
+                # 5a. STREAMING HANDLER
                 line_buffer = ""
                 for line in resp.iter_lines():
                     if not line: continue
@@ -206,7 +217,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                                     line_buffer = parts[-1]
                                                     target_node["content"] = "\n".join(valid_parts) + ("\n" if valid_parts else "")
                                                 else:
-                                                    target_node["content"] = "" # Hold until line complete or stream end
+                                                    target_node["content"] = ""
                                             else:
                                                 target_node["content"] = ""
 
@@ -223,13 +234,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     full_clean_response_text.append(line_buffer)
                     final_chunk = {"choices": [{"delta": {"content": line_buffer}}]}
                     try:
+                        # CRITICAL: Separate data chunk and flush before [DONE]
                         self.wfile.write(f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n".encode('latin-1'))
+                        self.wfile.flush()
                         self.wfile.write(b"data: [DONE]\n")
                     except: pass
 
             else:
                 # 5b. NON-STREAMING HANDLER (JSON)
                 try:
+                    raw_resp_text = resp.text
+                    if not raw_resp_text.strip():
+                        raise ValueError("Empty response body")
+                    
                     resp_json = resp.json()
                     for choice in resp_json.get('choices', []):
                         msg = choice.get('message', {})
@@ -249,7 +266,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps(mangled, ensure_ascii=False).encode('latin-1', errors='replace'))
                     full_raw_response_content.append(json.dumps(resp_json))
                 except Exception as e:
-                    with LOCK: print(f"Non-stream parse error: {e}")
+                    with LOCK: print(f"Non-stream parse error: {e}. Raw: {resp.text[:100]}")
+                    # Fallback stub for mod stability
+                    fallback = {"choices": [{"message": {"content": "..."}}]}
+                    self.wfile.write(json.dumps(fallback).encode('latin-1'))
 
             try: self.wfile.flush()
             except: pass
@@ -290,7 +310,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print("="*80 + "\n")
 
         except Exception as e:
-            with LOCK: print(f"[{req_id}] ERROR: {e}")
+            with LOCK: print(f"[{get_ts()}] ERROR: {e}")
             try: self.send_error(500, str(e))
             except: pass
         finally:
