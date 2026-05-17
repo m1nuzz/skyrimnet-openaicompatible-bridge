@@ -53,13 +53,13 @@ def process_recursive(obj, func):
     if isinstance(obj, dict): return {k: process_recursive(v, func) for k, v in obj.items()}
     return obj
 
-def immersion_filter(text):
-    """Strip technical AI leakage line-by-line instead of blocking entire response."""
-    if not text: return text
+def immersion_filter(text, skip=False):
+    """Strip technical AI leakage line-by-line. Skip if it's a memory/JSON task."""
+    if not text or skip: return text
+    # Anchored patterns to avoid matching keys inside JSON (e.g., "content": "...")
     leakage_patterns = [
-        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Current Interlocutor):\s*.*',
-        r'^\d+\.\s*\*\*.*?\*\*.*', # **Analyze the Scene:**
-        r'^\d+\.\s*Formulate.*',
+        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Current Interlocutor):\s*$',
+        r'^\d+\.\s*\*\*.*?\*\*.*$', 
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
@@ -101,8 +101,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if self.headers.get('Content-Encoding') == 'gzip':
                 decoded_body = zlib.decompress(raw_body, 16+zlib.MAX_WBITS)
             
+            # Check if this is a memory/JSON task to skip immersion filter later
+            is_json_task = False
             try:
                 request_json = json.loads(decoded_body.decode('utf-8'))
+                full_prompt_text = str(request_json.get('messages', []))
+                if "json" in full_prompt_text.lower() or "memory" in full_prompt_text.lower():
+                    is_json_task = True
+
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
                 unsupported = ["provider", "reasoning", "frequency_penalty", "presence_penalty", "logit_bias"]
                 for f in unsupported: clean_request_json.pop(f, None)
@@ -153,7 +159,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 for choice in chunk_json["choices"]:
                                     target_node = choice.get("delta") or choice.get("message")
                                     if target_node:
-                                        content = target_node.get("content", "") or target_node.get("reasoning_content", "") or ""
+                                        # Standard content primarily
+                                        content = target_node.get("content", "") or ""
                                         
                                         if not is_thinking and ("<thought>" in content or "<thinking>" in content):
                                             is_thinking = True
@@ -167,20 +174,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                                 content = ""
                                         
                                         if content:
-                                            content = immersion_filter(content)
+                                            content = immersion_filter(content, skip=is_json_task)
                                             if content:
                                                 full_clean_response_text.append(content)
                                         
                                         target_node["content"] = content
 
-                            # CRITICAL: Use ensure_ascii=False and standard separators to preserve spacing and readability
-                            processed_line = f"data: {json.dumps(process_recursive(chunk_json, safe_remangle), ensure_ascii=False)}"
+                            # SEND CLEAN UTF-8 TO MOD (No remangle)
+                            processed_line = f"data: {json.dumps(chunk_json, ensure_ascii=False)}"
                         except:
                             pass
                 
                 if processed_line.strip() != "data: {}":
                     try:
-                        self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
+                        self.wfile.write((processed_line + "\n").encode('utf-8', errors='replace'))
                     except:
                         break
             
@@ -200,7 +207,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 elif resp.status_code != 200:
                     print(f"ERROR BODY: {''.join(full_raw_response_content)[:500]}...")
                 else:
-                    print("Clean Response: (EMPTY - ALL FILTERED OR THINKING)")
+                    print("Clean Response: (EMPTY)")
+                    print(f"Raw Snippet: {''.join(full_raw_response_content)[:200]}...")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
