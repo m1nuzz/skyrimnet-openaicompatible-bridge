@@ -56,9 +56,9 @@ def process_recursive(obj, func):
 def immersion_filter(text, skip=False):
     """Strip technical AI leakage line-by-line. Skip if it's a memory/JSON task."""
     if not text or skip: return text
-    # Anchored patterns to avoid matching keys inside JSON (e.g., "content": "...")
+    # Anchored patterns but allowed to have content after the colon
     leakage_patterns = [
-        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Current Interlocutor):\s*$',
+        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario):\s*.*$',
         r'^\d+\.\s*\*\*.*?\*\*.*$', 
         r'^thought\.?$',
         r'^thinking\.?$'
@@ -106,7 +106,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 request_json = json.loads(decoded_body.decode('utf-8'))
                 full_prompt_text = str(request_json.get('messages', []))
-                if "json" in full_prompt_text.lower() or "memory" in full_prompt_text.lower():
+                # Detect tasks that require raw output
+                if any(kw in full_prompt_text.lower() for kw in ["json", "memory", "mood", "query", "impression"]):
                     is_json_task = True
 
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
@@ -159,19 +160,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 for choice in chunk_json["choices"]:
                                     target_node = choice.get("delta") or choice.get("message")
                                     if target_node:
-                                        # Standard content primarily
-                                        content = target_node.get("content", "") or ""
+                                        # Support reasoning_content fallback
+                                        content = target_node.get("content", "") or target_node.get("reasoning_content", "") or ""
                                         
-                                        if not is_thinking and ("<thought>" in content or "<thinking>" in content):
-                                            is_thinking = True
-                                            content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
-                                        
-                                        if is_thinking:
-                                            if "</thought>" in content or "</thinking>" in content:
-                                                is_thinking = False
-                                                content = re.sub(r'.*?</(thought|thinking)>', '', content, flags=re.DOTALL)
-                                            else:
-                                                content = ""
+                                        # THOUGHT STRIPPING - ONLY if not a JSON task
+                                        if not is_json_task:
+                                            if not is_thinking and ("<thought>" in content or "<thinking>" in content):
+                                                is_thinking = True
+                                                content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
+                                            
+                                            if is_thinking:
+                                                if "</thought>" in content or "</thinking>" in content:
+                                                    is_thinking = False
+                                                    content = re.sub(r'.*?</(thought|thinking)>', '', content, flags=re.DOTALL)
+                                                else:
+                                                    content = ""
                                         
                                         if content:
                                             content = immersion_filter(content, skip=is_json_task)
@@ -180,7 +183,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                         
                                         target_node["content"] = content
 
-                            # SEND CLEAN UTF-8 TO MOD (No remangle)
                             processed_line = f"data: {json.dumps(chunk_json, ensure_ascii=False)}"
                         except:
                             pass
@@ -207,7 +209,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 elif resp.status_code != 200:
                     print(f"ERROR BODY: {''.join(full_raw_response_content)[:500]}...")
                 else:
-                    print("Clean Response: (EMPTY)")
+                    print("Clean Response: (EMPTY - AI might be thinking or filter was too aggressive)")
                     print(f"Raw Snippet: {''.join(full_raw_response_content)[:200]}...")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
