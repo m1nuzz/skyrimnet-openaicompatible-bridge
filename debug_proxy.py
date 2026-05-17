@@ -7,6 +7,5 @@
 # to enable verbose logging.
 from server import serve
 
-
 if __name__ == "__main__":
     serve(debug=True)
