@@ -1,5 +1,6 @@
-# SkyrimNet Master Provider Bridge - High Performance Edition
-# Consolidated from 46+ commits. Optimised for SSE protocol (\n\n) and instant streaming.
+# SkyrimNet Master Provider Bridge - UTF-8 Clean Edition
+# Audited and consolidated from 46+ commits. 
+# Fixed critical encoding bug (????? instead of Russian text) by using pure UTF-8.
 import json
 import os
 import re
@@ -31,7 +32,7 @@ def get_ts():
 def safe_fix_mojibake(s):
     """Recursively and resiliently fix Russian mojibake in a string."""
     if not isinstance(s, str): return s
-    if s.startswith("data:image"): return s # Skip image data for performance
+    if s.startswith("data:image"): return s 
     if not ('Ð' in s or 'Ñ' in s or '├Р' in s or '├С' in s): return s
     try:
         b = s.encode('latin-1', errors='replace')
@@ -39,17 +40,8 @@ def safe_fix_mojibake(s):
     except:
         return s
 
-def safe_remangle(s):
-    """Convert clean UTF-8 back to broken Latin-1 for Skyrim engine compatibility."""
-    if not isinstance(s, str): return s
-    try:
-        b = s.encode('utf-8')
-        return b.decode('latin-1')
-    except:
-        return s
-
 def process_recursive(obj, func):
-    """Apply func to all strings in a nested structure."""
+    """Apply func to all strings in a nested JSON-like structure."""
     if isinstance(obj, str): return func(obj)
     if isinstance(obj, list): return [process_recursive(i, func) for i in obj]
     if isinstance(obj, dict): return {k: process_recursive(v, func) for k, v in obj.items()}
@@ -61,13 +53,13 @@ def is_leakage_line(line, skip=False):
     leakage_patterns = [
         r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Dialogue|Thought|Thinking|Note|Note to self):\s*.*$',
         r'^(Ответ|Реакция|Действие|Мысли|План|Заметка):\s*.*$',
-        r'^\d+[\.\)]\s.*$', # Numbered points
+        r'^\d+[\.\)]\s.*$', 
         r'^\d+\.\s*\*\*.*?\*\*.*$', 
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
     l_strip = line.strip()
-    if l_strip.upper().startswith("ACTION:"): return False # Explicitly allow game actions
+    if l_strip.upper().startswith("ACTION:"): return False 
     for pattern in leakage_patterns:
         if re.search(pattern, l_strip, re.IGNORECASE): return True
     return False
@@ -146,7 +138,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
             if API_KEY_LOCAL: url += f"?key={API_KEY_LOCAL}"
 
-            # 4. Request to API (LONG TIMEOUT FOR REASONING)
+            # 4. Request to API
             resp = SESSION.post(url, headers=headers, data=forward_data, timeout=3600, stream=stream_requested)
             
             self.send_response(resp.status_code)
@@ -163,7 +155,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             is_thinking = False
 
             if stream_requested:
-                # 5a. INSTANT STREAMING HANDLER (Fixes Latency)
+                # 5a. INSTANT STREAMING HANDLER
                 for line in resp.iter_lines():
                     if not line: continue
                     line_text = line.decode('utf-8', errors='replace')
@@ -179,13 +171,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     for choice in chunk_json["choices"]:
                                         target_node = choice.get("delta") or choice.get("message")
                                         if target_node:
-                                            # Strip hidden reasoning field
                                             reasoning = target_node.pop("reasoning_content", "")
                                             if reasoning: full_reasoning_text.append(reasoning)
 
                                             content = target_node.get("content", "") or ""
                                             
-                                            # Instant Tag Filter (No line-buffering latency)
+                                            # Instant Tag Filter
                                             if not is_json_task and content:
                                                 if not is_thinking:
                                                     if "<thought>" in content:
@@ -213,10 +204,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     
                     if processed_line.strip() != "data: {}":
                         try:
-                            # CRITICAL: Use \n\n for SSE protocol compliance
-                            self.wfile.write((processed_line + "\n\n").encode('latin-1', errors='replace'))
+                            # CRITICAL: Use UTF-8 and \n\n for SSE protocol compliance
+                            self.wfile.write((processed_line + "\n\n").encode('utf-8'))
                             self.wfile.flush()
-                        except: break
+                        except (ConnectionAbortedError, ConnectionResetError):
+                            break
+                        except:
+                            break
 
             else:
                 # 5b. NON-STREAMING HANDLER
@@ -234,15 +228,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             msg['content'] = clean_content
                             full_clean_response_text.append(clean_content)
                     
-                    mangled = process_recursive(resp_json, safe_remangle)
-                    self.wfile.write(json.dumps(mangled, ensure_ascii=False).encode('latin-1', errors='replace'))
+                    # Use UTF-8 for outgoing JSON
+                    self.wfile.write(json.dumps(resp_json, ensure_ascii=False).encode('utf-8'))
                     full_raw_response_content.append(json.dumps(resp_json))
                 except Exception as e:
                     with LOCK: print(f"Non-stream error: {e}")
-                    # Safety stub for mod stability
                     fallback_content = "NEUTRAL" if "mood" in str(clean_request_json).lower() else "ACTION: None" if "action" in str(clean_request_json).lower() else "..."
                     fallback = {"choices": [{"message": {"content": fallback_content}}]}
-                    self.wfile.write(json.dumps(fallback).encode('latin-1'))
+                    self.wfile.write(json.dumps(fallback).encode('utf-8'))
 
             try: self.wfile.flush()
             except: pass
@@ -253,9 +246,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print(f"\n{'='*80}")
                 print(f"[{req_id}] INCOMING REQUEST [Active: {current_active}]")
                 print(f"Path: {self.path} | Model: {clean_request_json.get('model')} | Latency: {duration:.2f}s")
-                print(f"Type: {'BACKGROUND TASK' if is_json_task else 'DIALOGUE'}")
-                
-                if stripped_fields: print(f"INFO: Stripped fields: {', '.join(stripped_fields)}")
                 
                 print("\n--- HEADERS ---")
                 for h, v in self.headers.items(): print(f"  {h}: {v}")
