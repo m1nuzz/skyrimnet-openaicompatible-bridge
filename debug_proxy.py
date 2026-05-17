@@ -16,7 +16,6 @@ load_dotenv()
 
 # Configuration
 PORT = int(os.getenv("PORT", 4000))
-# Default to Google, but allow override via CUSTOM_BASE_URL or BASE_URL
 FORWARD_TO = os.getenv("CUSTOM_BASE_URL") or os.getenv("BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/"
 API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
@@ -55,12 +54,12 @@ def process_recursive(obj, func):
     return obj
 
 def immersion_filter(text):
-    """Strip technical AI leakage that is not part of the dialogue."""
+    """Strip technical AI leakage line-by-line instead of blocking entire response."""
     if not text: return text
     leakage_patterns = [
-        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor):\s*.*',
-        r'^(Draft|Option|Scenario)\s*\d+[:\.]\s*.*',
-        r'^(Vars asks|Ralof is|Ralof just said|Ralof looks):\s*.*',
+        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Current Interlocutor):\s*.*',
+        r'^\d+\.\s*\*\*.*?\*\*.*', # **Analyze the Scene:**
+        r'^\d+\.\s*Formulate.*',
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
@@ -68,8 +67,10 @@ def immersion_filter(text):
     filtered_lines = []
     for line in lines:
         is_leakage = False
+        l_strip = line.strip()
+        if not l_strip: continue
         for pattern in leakage_patterns:
-            if re.search(pattern, line.strip(), re.IGNORECASE):
+            if re.search(pattern, l_strip, re.IGNORECASE):
                 is_leakage = True
                 break
         if not is_leakage:
@@ -152,7 +153,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 for choice in chunk_json["choices"]:
                                     target_node = choice.get("delta") or choice.get("message")
                                     if target_node:
-                                        # Support reasoning_content fallback
                                         content = target_node.get("content", "") or target_node.get("reasoning_content", "") or ""
                                         
                                         if not is_thinking and ("<thought>" in content or "<thinking>" in content):
@@ -173,6 +173,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                         
                                         target_node["content"] = content
 
+                            # CRITICAL: Use ensure_ascii=False and standard separators to preserve spacing and readability
                             processed_line = f"data: {json.dumps(process_recursive(chunk_json, safe_remangle), ensure_ascii=False)}"
                         except:
                             pass
@@ -193,14 +194,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_body)} bytes)")
                 print(f"Model: {clean_request_json.get('model')} | STATUS: {resp.status_code} | Latency: {duration:.2f}s")
                 
-                resp_sample = "".join(full_clean_response_text).strip()
+                resp_sample = " ".join(full_clean_response_text).strip()
                 if resp_sample:
-                    print(f"Clean Response: {resp_sample[:500]}...")
+                    print(f"Clean Response: {resp_sample[:1000]}...")
                 elif resp.status_code != 200:
                     print(f"ERROR BODY: {''.join(full_raw_response_content)[:500]}...")
                 else:
-                    print("Clean Response: (EMPTY)")
-                    print(f"Raw Snippet: {''.join(full_raw_response_content)[:200]}...")
+                    print("Clean Response: (EMPTY - ALL FILTERED OR THINKING)")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
