@@ -57,6 +57,29 @@ def process_recursive(obj, func):
     if isinstance(obj, dict): return {k: process_recursive(v, func) for k, v in obj.items()}
     return obj
 
+def immersion_filter(text):
+    """Strip technical AI leakage that is not part of the dialogue."""
+    if not text: return text
+    # List of common technical labels leaked by models
+    leakage_patterns = [
+        r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor):\s*.*',
+        r'^(Draft|Option|Scenario)\s*\d+[:\.]\s*.*',
+        r'^(Vars asks|Ralof is|Ralof just said):\s*.*',
+        r'^thought\.?$',
+        r'^thinking\.?$'
+    ]
+    lines = text.split('\n')
+    filtered_lines = []
+    for line in lines:
+        is_leakage = False
+        for pattern in leakage_patterns:
+            if re.search(pattern, line, re.IGNORECASE):
+                is_leakage = True
+                break
+        if not is_leakage:
+            filtered_lines.append(line)
+    return '\n'.join(filtered_lines).strip()
+
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path in ["/v1", "/v1/chat/completions"]:
@@ -158,7 +181,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                         
                                         # Store clean text for logs
                                         if content:
-                                            full_clean_response_text.append(content)
+                                            # Apply Immersion Filter to remove labels
+                                            content = immersion_filter(content)
+                                            if content:
+                                                full_clean_response_text.append(content)
                                         
                                         target_node["content"] = content
 
