@@ -1,4 +1,4 @@
-# SkyrimNet Robust Debug Proxy - Resilient Encoding & Stream Support
+# SkyrimNet Robust Provider Bridge - Resilient Encoding & Stream Support
 import json
 import os
 import re
@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-PORT = 4000
+PORT = int(os.getenv("PORT", 4000))
 FORWARD_TO = "https://generativelanguage.googleapis.com/v1beta/openai/"
 API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
@@ -32,9 +32,7 @@ def safe_fix_mojibake(s):
     if not isinstance(s, str): return s
     if not ('Ð' in s or 'Ñ' in s): return s
     try:
-        # Step 1: Force to bytes as if it was Latin-1
         b = s.encode('latin-1', errors='replace')
-        # Step 2: Decode as UTF-8
         return b.decode('utf-8')
     except:
         return s
@@ -43,9 +41,7 @@ def safe_remangle(s):
     """Resiliently convert clean UTF-8 back to broken Latin-1 for SkyrimNet."""
     if not isinstance(s, str): return s
     try:
-        # Step 1: Clean UTF-8 string -> UTF-8 bytes
         b = s.encode('utf-8')
-        # Step 2: Bytes -> Latin-1 string (this creates characters like Ð)
         return b.decode('latin-1')
     except:
         return s
@@ -60,11 +56,10 @@ def process_recursive(obj, func):
 def immersion_filter(text):
     """Strip technical AI leakage that is not part of the dialogue."""
     if not text: return text
-    # List of common technical labels leaked by models
     leakage_patterns = [
         r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor):\s*.*',
         r'^(Draft|Option|Scenario)\s*\d+[:\.]\s*.*',
-        r'^(Vars asks|Ralof is|Ralof just said):\s*.*',
+        r'^(Vars asks|Ralof is|Ralof just said|Ralof looks):\s*.*',
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
@@ -73,7 +68,7 @@ def immersion_filter(text):
     for line in lines:
         is_leakage = False
         for pattern in leakage_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
+            if re.search(pattern, line.strip(), re.IGNORECASE):
                 is_leakage = True
                 break
         if not is_leakage:
@@ -106,13 +101,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             
             try:
                 request_json = json.loads(decoded_body.decode('utf-8'))
-                # Fix mojibake so Gemini understands Russian
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
-                
-                # Strip incompatible fields
                 unsupported = ["provider", "reasoning", "frequency_penalty", "presence_penalty", "logit_bias"]
                 for f in unsupported: clean_request_json.pop(f, None)
-                
                 forward_data = json.dumps(clean_request_json).encode('utf-8')
             except:
                 clean_request_json = {}
@@ -131,7 +122,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # 4. Request to API
             resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120, stream=True)
             
-            # Prepare for response to client
+            # Send initial response to mod
             self.send_response(resp.status_code)
             for h, v in resp.headers.items():
                 if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
@@ -140,13 +131,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
+            full_raw_response_content = []
             full_clean_response_text = []
             is_thinking = False
 
-            # 5. Process Stream / Body
+            # 5. Process Stream
             for line in resp.iter_lines():
                 if not line: continue
                 line_text = line.decode('utf-8', errors='replace')
+                full_raw_response_content.append(line_text)
                 
                 processed_line = line_text
                 if line_text.startswith("data: "):
@@ -154,70 +147,59 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     if data_payload != "[DONE]":
                         try:
                             chunk_json = json.loads(data_payload)
-                            
-                            # STATEFUL THOUGHT STRIPPING
                             if "choices" in chunk_json:
                                 for choice in chunk_json["choices"]:
-                                    target_node = None
-                                    if "delta" in choice: target_node = choice["delta"]
-                                    elif "message" in choice: target_node = choice["message"]
-                                    
-                                    if target_node and "content" in target_node:
-                                        content = target_node["content"]
+                                    target_node = choice.get("delta") or choice.get("message")
+                                    if target_node:
+                                        # Support reasoning_content fallback
+                                        content = target_node.get("content", "") or target_node.get("reasoning_content", "") or ""
                                         
-                                        # Detect start of thoughts
-                                        if not is_thinking:
-                                            if "<thought>" in content or "<thinking>" in content:
-                                                is_thinking = True
-                                                content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
+                                        if not is_thinking and ("<thought>" in content or "<thinking>" in content):
+                                            is_thinking = True
+                                            content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
                                         
-                                        # Detect end of thoughts
                                         if is_thinking:
                                             if "</thought>" in content or "</thinking>" in content:
                                                 is_thinking = False
                                                 content = re.sub(r'.*?</(thought|thinking)>', '', content, flags=re.DOTALL)
                                             else:
-                                                content = "" # Suppress everything while thinking
+                                                content = ""
                                         
-                                        # Store clean text for logs
                                         if content:
-                                            # Apply Immersion Filter to remove labels
                                             content = immersion_filter(content)
                                             if content:
                                                 full_clean_response_text.append(content)
                                         
                                         target_node["content"] = content
 
-                            # REMANGLE for SkyrimNet
-                            mangled_chunk = process_recursive(chunk_json, safe_remangle)
-                            # CRITICAL: Use ensure_ascii=False to keep raw characters
-                            processed_line = f"data: {json.dumps(mangled_chunk, ensure_ascii=False)}"
+                            processed_line = f"data: {json.dumps(process_recursive(chunk_json, safe_remangle), ensure_ascii=False)}"
                         except:
                             pass
                 
-                # Send to client
-                if processed_line.strip() != "data: {}": # Skip truly empty chunks
+                if processed_line.strip() != "data: {}":
                     try:
                         self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
-                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-                        break # Client left
+                    except:
+                        break
             
-            try:
-                self.wfile.flush()
-            except:
-                pass
+            try: self.wfile.flush()
+            except: pass
 
-            # 6. Log to Console
+            # 6. Log
             duration = time.time() - start_time
             with LOCK:
                 print(f"\n{'='*30} REQUEST START {'='*30}")
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_body)} bytes)")
-                print(f"Model: {clean_request_json.get('model')} | Latency: {duration:.2f}s")
-                # Print clean Russian for user to read
-                msg_sample = str(clean_request_json.get('messages', []))
-                print(f"Prompt Sample: {msg_sample[:500]}..." if len(msg_sample) > 500 else f"Prompt: {msg_sample}")
-                resp_sample = "".join(full_clean_response_text)
-                print(f"Clean Response: {resp_sample[:500]}..." if len(resp_sample) > 500 else f"Clean Response: {resp_sample}")
+                print(f"Model: {clean_request_json.get('model')} | STATUS: {resp.status_code} | Latency: {duration:.2f}s")
+                
+                resp_sample = "".join(full_clean_response_text).strip()
+                if resp_sample:
+                    print(f"Clean Response: {resp_sample[:500]}...")
+                elif resp.status_code != 200:
+                    print(f"ERROR BODY: {''.join(full_raw_response_content)[:500]}...")
+                else:
+                    print("Clean Response: (EMPTY)")
+                    print(f"Raw Snippet: {''.join(full_raw_response_content)[:200]}...")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
@@ -237,7 +219,7 @@ def kill_port(port):
 
 if __name__ == "__main__":
     kill_port(PORT)
-    print(f"Starting Streaming-Ready Debug Proxy on port {PORT}")
+    print(f"Starting SkyrimNet Provider Bridge on port {PORT}")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), ProxyHandler)
     try:
         server.serve_forever()
