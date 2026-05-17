@@ -1,12 +1,10 @@
-# SkyrimNet Robust Debug Proxy - Optimized for Performance
+# SkyrimNet Robust Debug Proxy - Resilient Encoding & Stream Support
 import json
 import os
 import re
 import threading
 import zlib
-import base64
 from datetime import datetime
-import subprocess
 import time
 import requests
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,163 +18,157 @@ PORT = 4000
 FORWARD_TO = "https://generativelanguage.googleapis.com/v1beta/openai/"
 API_KEY_LOCAL = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
 
-# Persistent session for connection pooling (faster)
+# Persistent session
 SESSION = requests.Session()
-
-# Shared state
-ACTIVE_REQUESTS = 0
 LOCK = threading.Lock()
+ACTIVE_REQUESTS = 0
 
 def get_ts():
     return datetime.now().strftime("%H:%M:%S.%f")
 
-def fix_mojibake(obj):
-    """Recursively fix double-encoded UTF-8 strings (UTF-8 as Latin-1)."""
-    if isinstance(obj, str):
-        try:
-            # Check if it looks like Russian mojibake (Ð or Ñ characters)
-            if 'Ð' in obj or 'Ñ' in obj:
-                # Try to re-encode as latin-1 and then decode as utf-8
-                return obj.encode('latin-1').decode('utf-8')
-        except:
-            pass
-        return obj
-    elif isinstance(obj, list):
-        return [fix_mojibake(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {k: fix_mojibake(v) for k, v in obj.items()}
-    return obj
+def safe_fix_mojibake(s):
+    """Resiliently fix Russian mojibake in a string."""
+    if not isinstance(s, str): return s
+    if not ('Ð' in s or 'Ñ' in s): return s
+    try:
+        # Step 1: Force to bytes as if it was Latin-1
+        b = s.encode('latin-1', errors='replace')
+        # Step 2: Decode as UTF-8
+        return b.decode('utf-8')
+    except:
+        return s
 
-def remangle_mojibake(obj):
-    """Recursively convert clean UTF-8 back to broken Latin-1 format for SkyrimNet."""
-    if isinstance(obj, str):
-        try:
-            # Clean string -> encode to UTF-8 bytes -> decode as Latin-1 to get characters like Ð
-            return obj.encode('utf-8').decode('latin-1')
-        except:
-            return obj
-    elif isinstance(obj, list):
-        return [remangle_mojibake(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {k: remangle_mojibake(v) for k, v in obj.items()}
+def safe_remangle(s):
+    """Resiliently convert clean UTF-8 back to broken Latin-1 for SkyrimNet."""
+    if not isinstance(s, str): return s
+    try:
+        # Step 1: Clean UTF-8 string -> UTF-8 bytes
+        b = s.encode('utf-8')
+        # Step 2: Bytes -> Latin-1 string (this creates characters like Ð)
+        return b.decode('latin-1')
+    except:
+        return s
+
+def process_recursive(obj, func):
+    """Apply func to all strings in a nested JSON-like structure."""
+    if isinstance(obj, str): return func(obj)
+    if isinstance(obj, list): return [process_recursive(i, func) for i in obj]
+    if isinstance(obj, dict): return {k: process_recursive(v, func) for k, v in obj.items()}
     return obj
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path == "/v1" or self.path == "/v1/chat/completions":
+        if self.path in ["/v1", "/v1/chat/completions"]:
             self.handle_chat_completions()
         else:
-            self.send_error(404, "Not Found")
+            self.send_error(404)
 
     def handle_chat_completions(self):
         global ACTIVE_REQUESTS
         start_time = time.time()
-        
         with LOCK:
             ACTIVE_REQUESTS += 1
             current_active = ACTIVE_REQUESTS
         
         try:
-            # 1. Read body (Fast)
+            # 1. Read Raw Input
             content_length = int(self.headers.get('Content-Length', 0))
-            raw_data = self.rfile.read(content_length)
+            raw_body = self.rfile.read(content_length)
             
-            # 2. Forward IMMEDIATELY to minimize lag for the mod
-            # We clean it before forwarding to avoid 400 errors
-            data_to_clean = raw_data
+            # 2. Decode & Fix for AI
+            decoded_body = raw_body
             if self.headers.get('Content-Encoding') == 'gzip':
-                data_to_clean = zlib.decompress(raw_data, 16+zlib.MAX_WBITS)
+                decoded_body = zlib.decompress(raw_body, 16+zlib.MAX_WBITS)
             
             try:
-                body = json.loads(data_to_clean.decode('utf-8'))
-                # Apply mojibake fix for Russian text
-                body = fix_mojibake(body)
-                body_is_json = True
-            except:
-                body = {}
-                body_is_json = False
-
-            forward_data = raw_data
-            if body_is_json:
-                cleaned = body.copy()
+                request_json = json.loads(decoded_body.decode('utf-8'))
+                # Fix mojibake so Gemini understands Russian
+                clean_request_json = process_recursive(request_json, safe_fix_mojibake)
+                
+                # Strip incompatible fields
                 unsupported = ["provider", "reasoning", "frequency_penalty", "presence_penalty", "logit_bias"]
-                for f in unsupported: cleaned.pop(f, None)
-                forward_data = json.dumps(cleaned).encode('utf-8')
+                for f in unsupported: clean_request_json.pop(f, None)
+                
+                forward_data = json.dumps(clean_request_json).encode('utf-8')
+            except:
+                clean_request_json = {}
+                forward_data = raw_body
 
-            # Headers
+            # 3. Headers
             headers = {k: v for k, v in self.headers.items() if k.lower() not in ['content-length', 'content-encoding', 'host', 'authorization']}
             headers['Content-Type'] = 'application/json'
             headers['Connection'] = 'close'
-            
-            url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
             if API_KEY_LOCAL:
                 headers['Authorization'] = f"Bearer {API_KEY_LOCAL}"
-                url += f"?key={API_KEY_LOCAL}"
             
-            # Perform network call
-            resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120)
+            url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
+            if API_KEY_LOCAL: url += f"?key={API_KEY_LOCAL}"
+
+            # 4. Request to API
+            # Note: stream=True handling is tricky with requests.text, so we handle manually
+            resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120, stream=True)
             
-            # 5. Clean Response
-            response_text = resp.text
-            if "<thought>" in response_text:
-                response_text = re.sub(r'<thought>.*?</thought>', '', response_text, flags=re.DOTALL).strip()
+            # Prepare for response
+            self.send_response(resp.status_code)
+            for h, v in resp.headers.items():
+                if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
+                    self.send_header(h, v)
+            self.send_header('Connection', 'close')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
 
-            # Re-mangle to broken format for SkyrimNet compatibility
-            try:
-                resp_json = json.loads(response_text)
-                # Convert clean Russian -> broken Latin-1 representation
-                mangled_json = remangle_mojibake(resp_json)
-                # We use default json.dumps (ensure_ascii=True) to produce standard JSON string
-                # then encode it to bytes.
-                final_response_text = json.dumps(mangled_json)
-            except:
-                # Fallback if not JSON
-                final_response_text = response_text
+            full_response_text = []
 
-            response_bytes = final_response_text.encode('utf-8')
+            # 5. Process Stream / Body
+            for line in resp.iter_lines():
+                if not line: continue
+                line_text = line.decode('utf-8', errors='replace')
+                
+                # Clean and Remangle each line of the stream
+                processed_line = line_text
+                if line_text.startswith("data: "):
+                    data_payload = line_text[6:].strip()
+                    if data_payload != "[DONE]":
+                        try:
+                            chunk_json = json.loads(data_payload)
+                            # Remove thought tags
+                            if "choices" in chunk_json:
+                                for choice in chunk_json["choices"]:
+                                    if "delta" in choice and "content" in choice["delta"]:
+                                        c = choice["delta"]["content"]
+                                        choice["delta"]["content"] = re.sub(r'<thought>.*?</thought>', '', c, flags=re.DOTALL)
+                                    elif "message" in choice and "content" in choice["message"]:
+                                        c = choice["message"]["content"]
+                                        choice["message"]["content"] = re.sub(r'<thought>.*?</thought>', '', c, flags=re.DOTALL)
+                            
+                            # REMANGLE for SkyrimNet
+                            mangled_chunk = process_recursive(chunk_json, safe_remangle)
+                            processed_line = f"data: {json.dumps(mangled_chunk)}"
+                        except:
+                            pass
+                
+                full_response_text.append(processed_line)
+                self.wfile.write((processed_line + "\n").encode('utf-8'))
+            
+            self.wfile.flush()
 
-            # 6. Send Back & Final Log
-
-            try:
-                self.send_response(resp.status_code)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(response_bytes)))
-                self.send_header('Connection', 'close')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(response_bytes)
-                self.wfile.flush()
-            except:
-                pass
-
-            # 5. Log everything to console (after the mod got its response)
+            # 6. Log to Console
             duration = time.time() - start_time
             with LOCK:
                 print(f"\n{'='*30} REQUEST START {'='*30}")
-                print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_data)} bytes)")
-                
-                print("HEADERS:")
-                for h, v in self.headers.items():
-                    print(f"  {h}: {v}")
-
-                if body_is_json:
-                    print(f"\nRAW JSON BODY:\n{json.dumps(body, indent=2, ensure_ascii=False)}")
-                else:
-                    print(f"\nRAW BODY (Not JSON):\n{data_to_clean.decode('utf-8', errors='replace')}")
-                
-                print(f"\n{'-'*20} API RESPONSE {'-'*20}")
-                print(f"[{get_ts()}] STATUS: {resp.status_code} | LATENCY: {duration:.2f}s")
-                print(f"RESPONSE BODY:\n{response_text}")
+                print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_body)} bytes)")
+                print(f"Model: {clean_request_json.get('model')} | Latency: {duration:.2f}s")
+                # Print clean Russian for user to read
+                print(f"Prompt Sample: {str(clean_request_json.get('messages', []))[:500]}...")
+                print(f"Response: {''.join(full_response_text)[:500]}...")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
-            with LOCK:
-                print(f"[{get_ts()}] ERROR: {e}")
+            with LOCK: print(f"[{get_ts()}] ERROR: {e}")
             try: self.send_error(500, str(e))
             except: pass
         finally:
-            with LOCK:
-                ACTIVE_REQUESTS -= 1
+            with LOCK: ACTIVE_REQUESTS -= 1
 
     def log_message(self, format, *args): return
 
@@ -188,9 +180,7 @@ def kill_port(port):
 
 if __name__ == "__main__":
     kill_port(PORT)
-    print(f"Starting Optimized Debug Proxy on port {PORT}")
-    print(f"Target: {FORWARD_TO}")
-    
+    print(f"Starting Streaming-Ready Debug Proxy on port {PORT}")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), ProxyHandler)
     try:
         server.serve_forever()
