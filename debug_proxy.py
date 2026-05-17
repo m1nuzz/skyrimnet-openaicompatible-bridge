@@ -106,42 +106,62 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if API_KEY_LOCAL: url += f"?key={API_KEY_LOCAL}"
 
             # 4. Request to API
-            # Note: stream=True handling is tricky with requests.text, so we handle manually
             resp = SESSION.post(url, headers=headers, data=forward_data, timeout=120, stream=True)
             
-            # Prepare for response
+            # Prepare for response to client
             self.send_response(resp.status_code)
             for h, v in resp.headers.items():
-                if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
+                if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
                     self.send_header(h, v)
             self.send_header('Connection', 'close')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
-            full_response_text = []
+            full_clean_response_text = []
+            is_thinking = False
 
             # 5. Process Stream / Body
             for line in resp.iter_lines():
                 if not line: continue
                 line_text = line.decode('utf-8', errors='replace')
                 
-                # Clean and Remangle each line of the stream
                 processed_line = line_text
                 if line_text.startswith("data: "):
                     data_payload = line_text[6:].strip()
                     if data_payload != "[DONE]":
                         try:
                             chunk_json = json.loads(data_payload)
-                            # Remove thought tags
+                            
+                            # STATEFUL THOUGHT STRIPPING
                             if "choices" in chunk_json:
                                 for choice in chunk_json["choices"]:
-                                    if "delta" in choice and "content" in choice["delta"]:
-                                        c = choice["delta"]["content"]
-                                        choice["delta"]["content"] = re.sub(r'<thought>.*?</thought>', '', c, flags=re.DOTALL)
-                                    elif "message" in choice and "content" in choice["message"]:
-                                        c = choice["message"]["content"]
-                                        choice["message"]["content"] = re.sub(r'<thought>.*?</thought>', '', c, flags=re.DOTALL)
-                            
+                                    target_node = None
+                                    if "delta" in choice: target_node = choice["delta"]
+                                    elif "message" in choice: target_node = choice["message"]
+                                    
+                                    if target_node and "content" in target_node:
+                                        content = target_node["content"]
+                                        
+                                        # Detect start of thoughts
+                                        if not is_thinking:
+                                            if "<thought>" in content or "<thinking>" in content:
+                                                is_thinking = True
+                                                content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
+                                        
+                                        # Detect end of thoughts
+                                        if is_thinking:
+                                            if "</thought>" in content or "</thinking>" in content:
+                                                is_thinking = False
+                                                content = re.sub(r'.*?</(thought|thinking)>', '', content, flags=re.DOTALL)
+                                            else:
+                                                content = "" # Suppress everything while thinking
+                                        
+                                        # Store clean text for logs
+                                        if content:
+                                            full_clean_response_text.append(content)
+                                        
+                                        target_node["content"] = content
+
                             # REMANGLE for SkyrimNet
                             mangled_chunk = process_recursive(chunk_json, safe_remangle)
                             # CRITICAL: Use ensure_ascii=False to keep raw characters
@@ -149,11 +169,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         except:
                             pass
                 
-                full_response_text.append(processed_line)
-                # CRITICAL: Encode back to latin-1 so the game sees 1 byte per 'broken' character
-                self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
+                # Send to client
+                if processed_line.strip() != "data: {}": # Skip truly empty chunks
+                    try:
+                        self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
+                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                        break # Client left
             
-            self.wfile.flush()
+            try:
+                self.wfile.flush()
+            except:
+                pass
 
             # 6. Log to Console
             duration = time.time() - start_time
@@ -162,8 +188,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_body)} bytes)")
                 print(f"Model: {clean_request_json.get('model')} | Latency: {duration:.2f}s")
                 # Print clean Russian for user to read
-                print(f"Prompt Sample: {str(clean_request_json.get('messages', []))[:500]}...")
-                print(f"Response: {''.join(full_response_text)[:500]}...")
+                msg_sample = str(clean_request_json.get('messages', []))
+                print(f"Prompt Sample: {msg_sample[:500]}..." if len(msg_sample) > 500 else f"Prompt: {msg_sample}")
+                resp_sample = "".join(full_clean_response_text)
+                print(f"Clean Response: {resp_sample[:500]}..." if len(resp_sample) > 500 else f"Clean Response: {resp_sample}")
                 print(f"{'='*31} REQUEST END {'='*31}\n")
 
         except Exception as e:
