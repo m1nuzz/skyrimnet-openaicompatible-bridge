@@ -1,6 +1,5 @@
-# SkyrimNet Master Debug Proxy - The Definitive Version
-# Audited and consolidated from 46+ commits.
-# Enhanced with structural task detection and Action preservation.
+# SkyrimNet Master Debug Proxy - High Performance Edition
+# Audited and consolidated from 46+ commits. Optimised for SSE protocol (\n\n) and instant streaming.
 import json
 import os
 import re
@@ -32,7 +31,7 @@ def get_ts():
 def safe_fix_mojibake(s):
     """Recursively and resiliently fix Russian mojibake in a string."""
     if not isinstance(s, str): return s
-    if s.startswith("data:image"): return s # Efficiency: skip image data
+    if s.startswith("data:image"): return s # Skip image data for performance
     if not ('Ð' in s or 'Ñ' in s or '├Р' in s or '├С' in s): return s
     try:
         b = s.encode('latin-1', errors='replace')
@@ -41,7 +40,7 @@ def safe_fix_mojibake(s):
         return s
 
 def safe_remangle(s):
-    """Convert clean UTF-8 back to broken Latin-1/Cyrillic for Skyrim engine compatibility."""
+    """Convert clean UTF-8 back to broken Latin-1 for Skyrim engine compatibility."""
     if not isinstance(s, str): return s
     try:
         b = s.encode('utf-8')
@@ -50,36 +49,31 @@ def safe_remangle(s):
         return s
 
 def process_recursive(obj, func):
-    """Apply func to all strings in a nested JSON-like structure."""
+    """Apply func to all strings in a nested structure."""
     if isinstance(obj, str): return func(obj)
     if isinstance(obj, list): return [process_recursive(i, func) for i in obj]
     if isinstance(obj, dict): return {k: process_recursive(v, func) for k, v in obj.items()}
     return obj
 
 def is_leakage_line(line, skip=False):
-    """Check if a single line contains technical AI leakage. Preserves ACTION: commands."""
+    """Check if a line contains technical AI leakage. Preserves ACTION: commands."""
     if not line or skip: return False
-    # CRITICAL: 'Action' removed from patterns to prevent deleting gameplay commands
     leakage_patterns = [
         r'^(Character|Setting|Context|Tone|Situation|Interlocutor|Current NPC|Current Interlocutor|Roleplay|Draft|Option|Scenario|Dialogue|Thought|Thinking|Note|Note to self):\s*.*$',
         r'^(Ответ|Реакция|Действие|Мысли|План|Заметка):\s*.*$',
-        r'^\d+[\.\)]\s.*$', # Numbered reasoning
+        r'^\d+[\.\)]\s.*$', # Numbered points
         r'^\d+\.\s*\*\*.*?\*\*.*$', 
         r'^thought\.?$',
         r'^thinking\.?$'
     ]
     l_strip = line.strip()
-    # Explicitly ALLOW lines starting with ACTION: regardless of case
-    if l_strip.upper().startswith("ACTION:"):
-        return False
-        
+    if l_strip.upper().startswith("ACTION:"): return False # Explicitly allow game actions
     for pattern in leakage_patterns:
-        if re.search(pattern, l_strip, re.IGNORECASE):
-            return True
+        if re.search(pattern, l_strip, re.IGNORECASE): return True
     return False
 
 def apply_immersion_filter(text, skip=False):
-    """Strip technical AI leakage line-by-line from a full block of text."""
+    """Strip technical AI leakage line-by-line."""
     if not text or skip: return text
     lines = text.split('\n')
     filtered_lines = [l for l in lines if not is_leakage_line(l, skip)]
@@ -124,11 +118,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 stream_requested = request_json.get('stream', False)
                 full_prompt_text = str(request_json.get('messages', []))
                 
-                # STRUCTURAL TASK DETECTION
-                if "Output format: `" in full_prompt_text or \
-                   "Respond with ONLY" in full_prompt_text or \
-                   "Generate a memory search query" in full_prompt_text or \
-                   "Determine the next speaker" in full_prompt_text:
+                # Structural task detection
+                task_indicators = [
+                    "Output format: `", "Respond with ONLY", 
+                    "Generate a memory search query", "Determine the next speaker",
+                    "most appropriate action", "emotional state for", "Respond now. One line only"
+                ]
+                if any(kw in full_prompt_text for kw in task_indicators):
                     is_json_task = True
 
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
@@ -150,10 +146,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             url = f"{FORWARD_TO.rstrip('/')}/chat/completions"
             if API_KEY_LOCAL: url += f"?key={API_KEY_LOCAL}"
 
-            # 4. Request to API (LONG TIMEOUT)
+            # 4. Request to API (LONG TIMEOUT FOR REASONING)
             resp = SESSION.post(url, headers=headers, data=forward_data, timeout=3600, stream=stream_requested)
             
-            # Prepare Response Headers
             self.send_response(resp.status_code)
             for h, v in resp.headers.items():
                 if h.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
@@ -168,8 +163,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             is_thinking = False
 
             if stream_requested:
-                # 5a. STREAMING HANDLER
-                line_buffer = ""
+                # 5a. INSTANT STREAMING HANDLER (Fixes Latency)
                 for line in resp.iter_lines():
                     if not line: continue
                     line_text = line.decode('utf-8', errors='replace')
@@ -185,64 +179,49 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     for choice in chunk_json["choices"]:
                                         target_node = choice.get("delta") or choice.get("message")
                                         if target_node:
+                                            # Strip hidden reasoning field
                                             reasoning = target_node.pop("reasoning_content", "")
                                             if reasoning: full_reasoning_text.append(reasoning)
 
                                             content = target_node.get("content", "") or ""
                                             
+                                            # Instant Tag Filter (No line-buffering latency)
                                             if not is_json_task and content:
-                                                if not is_thinking and ("<thought>" in content or "<thinking>" in content):
-                                                    is_thinking = True
-                                                    content = re.sub(r'<(thought|thinking)>.*', '', content, flags=re.DOTALL)
+                                                if not is_thinking:
+                                                    if "<thought>" in content:
+                                                        is_thinking = True
+                                                        content = content.split("<thought>")[0]
+                                                    elif "<thinking>" in content:
+                                                        is_thinking = True
+                                                        content = content.split("<thinking>")[0]
+                                                
                                                 if is_thinking:
-                                                    if "</thought>" in content or "</thinking>" in content:
+                                                    if "</thought>" in content:
                                                         is_thinking = False
-                                                        content = re.sub(r'.*?</(thought|thinking)>', '', content, flags=re.DOTALL)
+                                                        content = content.split("</thought>")[-1]
+                                                    elif "</thinking>" in content:
+                                                        is_thinking = False
+                                                        content = content.split("</thinking>")[-1]
                                                     else:
                                                         content = ""
-                                            
-                                            if content:
-                                                line_buffer += content
-                                                if "\n" in line_buffer:
-                                                    parts = line_buffer.split("\n")
-                                                    valid_parts = []
-                                                    for i in range(len(parts) - 1):
-                                                        l = parts[i]
-                                                        if not is_leakage_line(l, skip=is_json_task):
-                                                            valid_parts.append(l)
-                                                            full_clean_response_text.append(l + "\n")
-                                                    line_buffer = parts[-1]
-                                                    target_node["content"] = "\n".join(valid_parts) + ("\n" if valid_parts else "")
-                                                else:
-                                                    target_node["content"] = ""
-                                            else:
-                                                target_node["content"] = ""
+
+                                            target_node["content"] = content
+                                            if content: full_clean_response_text.append(content)
 
                                 processed_line = f"data: {json.dumps(chunk_json, ensure_ascii=False)}"
                             except: pass
                     
                     if processed_line.strip() != "data: {}":
                         try:
-                            self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
+                            # CRITICAL: Use \n\n for SSE protocol compliance
+                            self.wfile.write((processed_line + "\n\n").encode('latin-1', errors='replace'))
+                            self.wfile.flush()
                         except: break
-                
-                # Final Flush
-                if line_buffer and not is_leakage_line(line_buffer, skip=is_json_task):
-                    full_clean_response_text.append(line_buffer)
-                    final_chunk = {"choices": [{"delta": {"content": line_buffer}}]}
-                    try:
-                        self.wfile.write(f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n".encode('latin-1'))
-                        self.wfile.flush()
-                        self.wfile.write(b"data: [DONE]\n")
-                    except: pass
 
             else:
                 # 5b. NON-STREAMING HANDLER
                 try:
-                    raw_resp_text = resp.text
-                    if not raw_resp_text.strip():
-                        raise ValueError("Empty response body")
-                    
+                    if not resp.text.strip(): raise ValueError("Empty response body")
                     resp_json = resp.json()
                     for choice in resp_json.get('choices', []):
                         msg = choice.get('message', {})
@@ -259,23 +238,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps(mangled, ensure_ascii=False).encode('latin-1', errors='replace'))
                     full_raw_response_content.append(json.dumps(resp_json))
                 except Exception as e:
-                    with LOCK: print(f"Non-stream parse error: {e}. Raw: {resp.text[:100]}")
-                    fallback = {"choices": [{"message": {"content": "..."}}]}
+                    with LOCK: print(f"Non-stream error: {e}")
+                    # Safety stub for mod stability
+                    fallback_content = "NEUTRAL" if "mood" in str(clean_request_json).lower() else "ACTION: None" if "action" in str(clean_request_json).lower() else "..."
+                    fallback = {"choices": [{"message": {"content": fallback_content}}]}
                     self.wfile.write(json.dumps(fallback).encode('latin-1'))
 
             try: self.wfile.flush()
             except: pass
 
-            # 6. EXHAUSTIVE DIAGNOSTIC LOGGING
+            # 6. VERBOSE LOGGING
             duration = time.time() - start_time
             with LOCK:
                 print(f"\n{'='*80}")
                 print(f"[{req_id}] INCOMING REQUEST [Active: {current_active}]")
                 print(f"Path: {self.path} | Model: {clean_request_json.get('model')} | Latency: {duration:.2f}s")
+                print(f"Type: {'BACKGROUND TASK' if is_json_task else 'DIALOGUE'}")
+                
+                if stripped_fields: print(f"INFO: Stripped fields: {', '.join(stripped_fields)}")
                 
                 print("\n--- HEADERS ---")
-                for h, v in self.headers.items():
-                    print(f"  {h}: {v}")
+                for h, v in self.headers.items(): print(f"  {h}: {v}")
 
                 print("\n--- STRUCTURED MESSAGES ---")
                 for m in clean_request_json.get('messages', []):
@@ -292,17 +275,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     print(f"\n--- AI REASONING (HIDDEN FROM MOD) ---")
                     print(reasoning_sample[:1000] + ("..." if len(reasoning_sample) > 1000 else ""))
 
-                print(f"\n--- FINAL CLEAN DIALOGUE ---")
+                print(f"\n--- FINAL CLEAN OUTPUT ---")
                 resp_sample = "".join(full_clean_response_text).strip()
                 print(resp_sample if resp_sample else "(EMPTY - AI thinking or filtered)")
-
-                print(f"\n--- RAW API RESPONSE SNIPPET (First 500) ---")
-                raw_joined = "".join(full_raw_response_content)
-                print(raw_joined[:500] + ("..." if len(raw_joined) > 500 else ""))
                 print("="*80 + "\n")
 
         except Exception as e:
-            with LOCK: print(f"[{get_ts()}] ERROR: {e}")
+            with LOCK: print(f"[{req_id}] CRITICAL ERROR: {e}")
             try: self.send_error(500, str(e))
             except: pass
         finally:
@@ -318,7 +297,7 @@ def kill_port(port):
 
 if __name__ == "__main__":
     kill_port(PORT)
-    print(f"Starting Master Debug Proxy on port {PORT}")
+    print(f"Starting SkyrimNet Master Bridge on port {PORT}")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), ProxyHandler)
     try:
         server.serve_forever()
