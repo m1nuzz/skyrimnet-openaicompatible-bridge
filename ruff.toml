@@ -1,0 +1,34 @@
+# Ruff config for the SkyrimNet bridge.
+#
+# We intentionally keep the rule set tight rather than enabling "all": the
+# bridge is a small single-file service and the goal is to catch real bugs
+# (unused imports, undefined names, broken format strings, mutable defaults),
+# not to enforce stylistic preferences across an existing 800-line file.
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "B",   # flake8-bugbear (likely bugs)
+    "UP",  # pyupgrade
+    "I",   # isort (import ordering)
+]
+ignore = [
+    "E501",  # line-too-long: many existing log lines / regex literals exceed 100
+    "E402",  # module-level import not at top: test_unit.py inserts sys.path first
+    "B008",  # function call in default arg: not used
+    "UP015", # use Path.open(): we deliberately use the stdlib http.server
+]
+
+[lint.per-file-ignores]
+# Test files are allowed to use bare assert and have long parametrize blocks.
+"test_*.py" = ["E501"]
+"click_test.py" = ["E501"]
+# test_bridge.py is a pre-existing integration smoke script kept as-is to
+# minimise the audit diff. Its style issues (bare except, one-liner if/else)
+# are out of scope for this PR.
+"test_bridge.py" = ["E501", "E701", "E722"]

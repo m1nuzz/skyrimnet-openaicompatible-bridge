@@ -1,6 +1,7 @@
-import requests
 import json
 import time
+
+import requests
 
 # Configuration
 BRIDGE_URL = "http://127.0.0.1:4000/v1/chat/completions"
@@ -39,7 +40,7 @@ def test_streaming_and_filtering():
     try:
         response = requests.post(BRIDGE_URL, json=payload, stream=True, timeout=15)
         print(f"Status: {response.status_code}")
-        
+
         full_text = ""
         for line in response.iter_lines():
             if line:
@@ -53,13 +54,13 @@ def test_streaming_and_filtering():
                             full_text += content
                             if content: print(content, end="", flush=True)
                         except: pass
-        
+
         print("\n\nFinal Full Text Analysis:")
         if "<thought>" in full_text or "<thinking>" in full_text:
             print("❌ FAILURE: <thought> tags leaked into output.")
         else:
             print("✅ SUCCESS: Technical tags filtered.")
-            
+
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
 
@@ -88,7 +89,7 @@ if __name__ == "__main__":
     print("SkyrimNet Bridge Verification Tool")
     print("Make sure server.py is running on port 4000 before starting.")
     time.sleep(1)
-    
+
     test_russian_encoding()
     test_action_preservation()
     test_streaming_and_filtering()
