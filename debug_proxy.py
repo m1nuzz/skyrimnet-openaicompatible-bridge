@@ -144,12 +144,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             
                             # REMANGLE for SkyrimNet
                             mangled_chunk = process_recursive(chunk_json, safe_remangle)
-                            processed_line = f"data: {json.dumps(mangled_chunk)}"
+                            # CRITICAL: Use ensure_ascii=False to keep raw characters
+                            processed_line = f"data: {json.dumps(mangled_chunk, ensure_ascii=False)}"
                         except:
                             pass
                 
                 full_response_text.append(processed_line)
-                self.wfile.write((processed_line + "\n").encode('utf-8'))
+                # CRITICAL: Encode back to latin-1 so the game sees 1 byte per 'broken' character
+                self.wfile.write((processed_line + "\n").encode('latin-1', errors='replace'))
             
             self.wfile.flush()
 
