@@ -107,7 +107,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 request_json = json.loads(decoded_body.decode('utf-8'))
                 full_prompt_text = str(request_json.get('messages', []))
                 # Detect tasks that require raw output
-                if any(kw in full_prompt_text.lower() for kw in ["json", "memory", "mood", "query", "impression"]):
+                if any(kw in full_prompt_text.lower() for kw in ["json", "memory", "mood", "query", "impression", "describe", "visible", "screenshot", "camera"]):
                     is_json_task = True
 
                 clean_request_json = process_recursive(request_json, safe_fix_mojibake)
@@ -203,7 +203,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print(f"[{get_ts()}] [Active: {current_active}] POST {self.path} ({len(raw_body)} bytes)")
                 print(f"Model: {clean_request_json.get('model')} | STATUS: {resp.status_code} | Latency: {duration:.2f}s")
                 
-                resp_sample = " ".join(full_clean_response_text).strip()
+                resp_sample = "".join(full_clean_response_text).strip()
                 if resp_sample:
                     print(f"Clean Response: {resp_sample[:1000]}...")
                 elif resp.status_code != 200:
